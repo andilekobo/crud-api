@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
+
 
 app = FastAPI()
 
@@ -22,9 +23,15 @@ def health():
     }
 
 
-# Stage 3: Request model
+# Stage 3: Request model for creating tasks
 class TaskCreate(BaseModel):
     title: str
+
+
+# Stage 4: Request model for updating tasks
+class TaskUpdate(BaseModel):
+    title: str | None = None
+    done: bool | None = None
 
 
 # Stage 2: In-memory tasks
@@ -95,3 +102,61 @@ def create_task(task: TaskCreate):
     tasks.append(new_task)
 
     return new_task
+
+
+# Stage 4: Update a task
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, task: TaskUpdate):
+
+    # Find the task
+    for existing_task in tasks:
+
+        if existing_task["id"] == task_id:
+
+            # Make sure at least one field was provided
+            if task.title is None and task.done is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="At least one field is required"
+                )
+
+            # Validate title if provided
+            if task.title is not None:
+
+                if not task.title.strip():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Task title cannot be empty"
+                    )
+
+                existing_task["title"] = task.title
+
+            # Update done if provided
+            if task.done is not None:
+                existing_task["done"] = task.done
+
+            return existing_task
+
+    # Task does not exist
+    raise HTTPException(
+        status_code=404,
+        detail=f"Task {task_id} not found"
+    )
+
+
+# Stage 4: Delete a task
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int):
+
+    for index, task in enumerate(tasks):
+
+        if task["id"] == task_id:
+
+            tasks.pop(index)
+
+            return Response(status_code=204)
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Task {task_id} not found"
+    )
