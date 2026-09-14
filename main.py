@@ -1,12 +1,18 @@
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
+from database import create_database, get_connection
+
 
 app = FastAPI(
     title="Task API",
-    description="A simple CRUD API built with FastAPI.",
-    version="1.0"
+    description="A simple CRUD API built with FastAPI and SQLite.",
+    version="2.0"
 )
+
+
+# Create the SQLite database and tasks table when the API starts
+create_database()
 
 
 # Stage 1: Root endpoint
@@ -17,7 +23,7 @@ app = FastAPI(
 def root():
     return {
         "name": "Task API",
-        "version": "1.0",
+        "version": "2.0",
         "endpoints": ["/tasks"]
     }
 
@@ -33,68 +39,65 @@ def health():
     }
 
 
-# Stage 3: Request model for creating tasks
+# Request model for creating tasks
 class TaskCreate(BaseModel):
     title: str
 
 
-# Stage 4: Request model for updating tasks
+# Request model for updating tasks
 class TaskUpdate(BaseModel):
     title: str | None = None
     done: bool | None = None
 
 
-# Stage 2: In-memory tasks
-tasks = [
-    {
-        "id": 1,
-        "title": "Learn FastAPI",
-        "done": False
-    },
-    {
-        "id": 2,
-        "title": "Build CRUD API",
-        "done": False
-    },
-    {
-        "id": 3,
-        "title": "Push project to GitHub",
-        "done": False
-    }
-]
-
-
-# Stage 2: Get all tasks
+# Stage 1: Get all tasks from SQLite
 @app.get(
     "/tasks",
-    description="Returns all tasks."
+    description="Returns all tasks from the database."
 )
 def get_tasks():
-    return tasks
+
+    connection = get_connection()
+
+    rows = connection.execute(
+        "SELECT id, title, done FROM tasks ORDER BY id"
+    ).fetchall()
+
+    connection.close()
+
+    return [dict(row) for row in rows]
 
 
-# Stage 2: Get one task
+# Stage 1: Get one task from SQLite
 @app.get(
     "/tasks/{task_id}",
     description="Returns a single task by ID."
 )
 def get_task(task_id: int):
 
-    for task in tasks:
-        if task["id"] == task_id:
-            return task
+    connection = get_connection()
 
-    raise HTTPException(
-        status_code=404,
-        detail=f"Task {task_id} not found"
-    )
+    row = connection.execute(
+        "SELECT id, title, done FROM tasks WHERE id = ?",
+        (task_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found"
+        )
+
+    return dict(row)
 
 
-# Stage 3: Create a task
+# Stage 2: Create a task in SQLite
 @app.post(
     "/tasks",
     status_code=201,
-    description="Creates a new task."
+    description="Creates a new task in the database."
 )
 def create_task(task: TaskCreate):
 
@@ -104,77 +107,114 @@ def create_task(task: TaskCreate):
             detail="Task title cannot be empty"
         )
 
-    new_id = max(
-        existing_task["id"]
-        for existing_task in tasks
-    ) + 1
+    connection = get_connection()
 
-    new_task = {
-        "id": new_id,
-        "title": task.title,
-        "done": False
-    }
+    cursor = connection.execute(
+        """
+        INSERT INTO tasks (title, done)
+        VALUES (?, ?)
+        """,
+        (task.title, False)
+    )
 
-    tasks.append(new_task)
+    connection.commit()
 
-    return new_task
+    task_id = cursor.lastrowid
+
+    row = connection.execute(
+        "SELECT id, title, done FROM tasks WHERE id = ?",
+        (task_id,)
+    ).fetchone()
+
+    connection.close()
+
+    return dict(row)
 
 
-# Stage 4: Update a task
+# Stage 3: Update a task in SQLite
 @app.put(
     "/tasks/{task_id}",
-    description="Updates an existing task."
+    description="Updates an existing task in the database."
 )
 def update_task(task_id: int, task: TaskUpdate):
 
-    for existing_task in tasks:
+    if task.title is None and task.done is None:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one field is required"
+        )
 
-        if existing_task["id"] == task_id:
+    connection = get_connection()
 
-            if task.title is None and task.done is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="At least one field is required"
-                )
+    existing_task = connection.execute(
+        "SELECT id, title, done FROM tasks WHERE id = ?",
+        (task_id,)
+    ).fetchone()
 
-            if task.title is not None:
+    if existing_task is None:
+        connection.close()
 
-                if not task.title.strip():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Task title cannot be empty"
-                    )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found"
+        )
 
-                existing_task["title"] = task.title
+    if task.title is not None:
 
-            if task.done is not None:
-                existing_task["done"] = task.done
+        if not task.title.strip():
+            connection.close()
 
-            return existing_task
+            raise HTTPException(
+                status_code=400,
+                detail="Task title cannot be empty"
+            )
 
-    raise HTTPException(
-        status_code=404,
-        detail=f"Task {task_id} not found"
-    )
+        connection.execute(
+            "UPDATE tasks SET title = ? WHERE id = ?",
+            (task.title, task_id)
+        )
+
+    if task.done is not None:
+
+        connection.execute(
+            "UPDATE tasks SET done = ? WHERE id = ?",
+            (task.done, task_id)
+        )
+
+    connection.commit()
+
+    updated_task = connection.execute(
+        "SELECT id, title, done FROM tasks WHERE id = ?",
+        (task_id,)
+    ).fetchone()
+
+    connection.close()
+
+    return dict(updated_task)
 
 
-# Stage 4: Delete a task
+# Stage 3: Delete a task from SQLite
 @app.delete(
     "/tasks/{task_id}",
     status_code=204,
-    description="Deletes an existing task."
+    description="Deletes an existing task from the database."
 )
 def delete_task(task_id: int):
 
-    for index, task in enumerate(tasks):
+    connection = get_connection()
 
-        if task["id"] == task_id:
-
-            tasks.pop(index)
-
-            return Response(status_code=204)
-
-    raise HTTPException(
-        status_code=404,
-        detail=f"Task {task_id} not found"
+    cursor = connection.execute(
+        "DELETE FROM tasks WHERE id = ?",
+        (task_id,)
     )
+
+    connection.commit()
+    connection.close()
+
+    if cursor.rowcount == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {task_id} not found"
+        )
+
+    return Response(status_code=204)
